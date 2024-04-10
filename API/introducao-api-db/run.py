@@ -1,11 +1,18 @@
 from flask import Flask, request, jsonify
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy.exc import SQLAlchemyError
+import uuid
+from werkzeug.security import generate_password_hash, check_password_hash
+import jwt
+import datetime
+from functools import wraps
 
 app = Flask(__name__)
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///netflix.db'
+app.config['SECRET_KEY'] = 'your_secret_key'
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///database.db'
 db = SQLAlchemy(app)
 
+# Definição do Modelo de Dados
 class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(50), unique=True, nullable=False)
@@ -42,10 +49,36 @@ class ViewingHistory(db.Model):
     date_watched = db.Column(db.DateTime, nullable=False)
 
 
+# Função para verificar se o usuário está autenticado
+def token_required(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        token = None
+
+        if 'x-access-token' in request.headers:
+            token = request.headers['x-access-token']
+
+        if not token:
+            return jsonify({'message': 'Token de acesso está faltando!'}), 401
+
+        try:
+            data = jwt.decode(token, app.config['SECRET_KEY'])
+            current_user = User.query.filter_by(id=data['user_id']).first()
+        except:
+            return jsonify({'message': 'Token de acesso é inválido!'}), 401
+
+        return f(current_user, *args, **kwargs)
+
+    return decorated
+
+
+# Rotas da API
+
 @app.route('/api/filmes/<int:id>/assistir', methods=['POST'])
-def assistir_filme(id):
+@token_required  # Requisito: Autenticação de Usuários
+def assistir_filme(current_user, id):
     data = request.get_json()
-    user_id = data.get('user_id')
+    user_id = current_user.id  # Usuário autenticado
     if not user_id:
         return jsonify({"error": "ID do usuário não fornecido"}), 400
 
@@ -63,7 +96,11 @@ def assistir_filme(id):
         return jsonify({"error": "Erro ao registrar filme assistido"}), 500
 
 @app.route('/api/usuarios/<int:user_id>/historico', methods=['GET'])
-def visualizar_historico(user_id):
+@token_required  # Requisito: Autenticação de Usuários
+def visualizar_historico(current_user, user_id):
+    if current_user.id != user_id:  # Verifica se o usuário autenticado é o mesmo do histórico solicitado
+        return jsonify({"error": "Não autorizado"}), 403
+
     historico = ViewingHistory.query.filter_by(user_id=user_id).all()
     filmes_assistidos = []
     for item in historico:
@@ -108,7 +145,11 @@ def buscar_filmes():
     return jsonify(lista_filmes), 200
 
 @app.route('/api/usuarios/<int:user_id>/listas_reproducao', methods=['POST'])
-def criar_lista_reproducao(user_id):
+@token_required  # Requisito: Autenticação de Usuários
+def criar_lista_reproducao(current_user, user_id):
+    if current_user.id != user_id:  # Verifica se o usuário autenticado é o mesmo do histórico solicitado
+        return jsonify({"error": "Não autorizado"}), 403
+
     data = request.get_json()
     nome_lista = data.get('nome_lista')
     filmes = data.get('filmes')
@@ -135,3 +176,4 @@ if __name__ == '__main__':
     with app.app_context():
         db.create_all()
     app.run(debug=True)
+
